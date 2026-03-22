@@ -1,0 +1,35 @@
+{
+  "productName": "yt-grab",
+  "version": "0.1.0",
+  "identifier": "com.ytgrab.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [
+      {
+        "title": "FETCH",
+        "width": 960,
+        "height": 720,
+        "resizable": true,
+        "minWidth": 820,
+        "minHeight": 580,
+        "decorations": true,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": []
+  }
+}
