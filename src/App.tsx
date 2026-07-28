@@ -8,51 +8,83 @@ import URLBar from "./components/URLBar";
 import MediaPanel from "./components/MediaPanel";
 import DownloadQueue from "./components/DownloadQueue";
 import HistoryPanel from "./components/HistoryPanel";
+import SettingsPanel from "./components/SettingsPanel";
 import type {
-  MediaInfo,
-  DownloadItem,
-  ProgressPayload,
-  CompletePayload,
-  ErrorPayload,
-  HistoryItem,
+  MediaInfo, DownloadItem, ProgressPayload,
+  CompletePayload, ErrorPayload, HistoryItem, Settings,
 } from "./types";
 
-type Tab = "download" | "history";
+type Tab = "download" | "history" | "settings";
+
+const DEFAULT_SETTINGS: Settings = {
+  default_save_folder: "",
+  default_format: "best",
+  embed_thumbnail: false,
+  embed_subtitles: false,
+  speed_limit: "",
+  cookies_browser: "",
+  auto_open_folder: false,
+  clear_queue_on_launch: false,
+  auto_delete_history_days: 0,
+};
 
 export default function App() {
-  const [ytVersion, setYtVersion]   = useState<string | null>(null);
-  const [ytMissing, setYtMissing]   = useState(false);
+  const [ytVersion, setYtVersion] = useState<string | null>(null);
+  const [ytMissing, setYtMissing] = useState(false);
 
-  const [url, setUrl]               = useState("");
-  const [fetching, setFetching]     = useState(false);
-  const [fetchErr, setFetchErr]     = useState<string | null>(null);
-  const [media, setMedia]           = useState<MediaInfo | null>(null);
+  const [url, setUrl]           = useState("");
+  const [fetching, setFetching] = useState(false);
+  const [fetchErr, setFetchErr] = useState<string | null>(null);
+  const [media, setMedia]       = useState<MediaInfo | null>(null);
 
-  const [format, setFormat]         = useState("best");
-  const [audioOnly, setAudioOnly]   = useState(false);
-  const [outDir, setOutDir]         = useState("");
+  const [format, setFormat]     = useState("best");
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [outDir, setOutDir]     = useState("");
 
-  const [downloads, setDownloads]   = useState<DownloadItem[]>([]);
-  const [history, setHistory]       = useState<HistoryItem[]>([]);
-  const [tab, setTab]               = useState<Tab>("download");
+  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
+  const [history, setHistory]     = useState<HistoryItem[]>([]);
+  const [tab, setTab]             = useState<Tab>("download");
 
-  // ── init ──────────────────────────────────────────────────────────────────
+  const [settings, setSettings]   = useState<Settings>(DEFAULT_SETTINGS);
+  const [settingsSaved, setSettingsSaved] = useState(false);
+
+  // ── init ────────────────────────────────────────────────────────────────
   useEffect(() => {
     invoke<string>("check_ytdlp")
       .then((v) => setYtVersion(v))
       .catch(() => setYtMissing(true));
 
-    downloadDir().then((d) => setOutDir(d)).catch(() => {});
+    // Load settings first, then set defaults
+    invoke<Settings>("get_settings").then((s) => {
+      setSettings(s);
+      // Apply default format
+      setFormat(s.default_format || "best");
+      // Apply default save folder, fall back to system Downloads
+      if (s.default_save_folder) {
+        setOutDir(s.default_save_folder);
+      } else {
+        downloadDir().then((d) => setOutDir(d)).catch(() => {});
+      }
+      // Clear queue on launch
+      if (s.clear_queue_on_launch) {
+        setDownloads([]);
+      }
+      // Auto-delete old history
+      if (s.auto_delete_history_days > 0) {
+        invoke("purge_old_history", { days: s.auto_delete_history_days }).catch(console.error);
+      }
+    }).catch(() => {
+      downloadDir().then((d) => setOutDir(d)).catch(() => {});
+    });
+
     loadHistory();
   }, []);
 
   function loadHistory() {
-    invoke<HistoryItem[]>("get_history")
-      .then(setHistory)
-      .catch(console.error);
+    invoke<HistoryItem[]>("get_history").then(setHistory).catch(console.error);
   }
 
-  // ── Tauri events ──────────────────────────────────────────────────────────
+  // ── Tauri events ────────────────────────────────────────────────────────
   useEffect(() => {
     const subs = [
       listen<ProgressPayload>("download:progress", ({ payload: p }) => {
@@ -72,6 +104,10 @@ export default function App() {
           )
         );
         loadHistory();
+        // Auto-open folder
+        if (settings.auto_open_folder && p.path) {
+          invoke("open_path", { path: p.path }).catch(console.error);
+        }
       }),
 
       listen<ErrorPayload>("download:error", ({ payload: p }) => {
@@ -85,9 +121,9 @@ export default function App() {
     ];
 
     return () => { subs.forEach((p) => p.then((fn) => fn())); };
-  }, []);
+  }, [settings.auto_open_folder]);
 
-  // ── handlers ──────────────────────────────────────────────────────────────
+  // ── handlers ────────────────────────────────────────────────────────────
   async function handleFetch() {
     if (!url.trim()) return;
     setFetching(true);
@@ -96,7 +132,7 @@ export default function App() {
     try {
       const info = await invoke<MediaInfo>("fetch_media_info", { url: url.trim() });
       setMedia(info);
-      setFormat("best");
+      setFormat(settings.default_format || "best");
       setAudioOnly(false);
     } catch (err) {
       setFetchErr(String(err));
@@ -137,6 +173,10 @@ export default function App() {
         formatId: format,
         outputDir: outDir,
         audioOnly,
+        embedThumbnail: settings.embed_thumbnail,
+        embedSubtitles: settings.embed_subtitles,
+        speedLimit: settings.speed_limit,
+        cookiesBrowser: settings.cookies_browser,
       });
     } catch (err) {
       setDownloads((prev) =>
@@ -176,7 +216,17 @@ export default function App() {
     setHistory([]);
   }
 
-  const showEmpty = tab === "download" && !fetching && !media && downloads.length === 0 && !fetchErr && !ytMissing;
+  async function handleSaveSettings() {
+    await invoke("save_settings", { settings }).catch(console.error);
+    // Apply folder + format immediately
+    if (settings.default_save_folder) setOutDir(settings.default_save_folder);
+    setFormat(settings.default_format);
+    setSettingsSaved(true);
+    setTimeout(() => setSettingsSaved(false), 2000);
+  }
+
+  const activeCount = downloads.filter((d) => d.status === "downloading" || d.status === "queued").length;
+  const showEmpty   = tab === "download" && !fetching && !media && downloads.length === 0 && !fetchErr && !ytMissing;
 
   return (
     <div className="app-root">
@@ -189,11 +239,7 @@ export default function App() {
           onClick={() => setTab("download")}
         >
           Download
-          {downloads.filter((d) => d.status === "downloading" || d.status === "queued").length > 0 && (
-            <span className="tab-pill">
-              {downloads.filter((d) => d.status === "downloading" || d.status === "queued").length}
-            </span>
-          )}
+          {activeCount > 0 && <span className="tab-pill">{activeCount}</span>}
         </button>
         <button
           className={`tab-btn ${tab === "history" ? "tab-active" : ""}`}
@@ -202,9 +248,16 @@ export default function App() {
           History
           {history.length > 0 && <span className="tab-pill">{history.length}</span>}
         </button>
+        <button
+          className={`tab-btn ${tab === "settings" ? "tab-active" : ""}`}
+          onClick={() => setTab("settings")}
+        >
+          Settings
+        </button>
       </div>
 
       <div className="main">
+        {/* ── Download Tab ──────────────────────────────────────────────── */}
         {tab === "download" && (
           <>
             {ytMissing && (
@@ -259,12 +312,23 @@ export default function App() {
           </>
         )}
 
+        {/* ── History Tab ───────────────────────────────────────────────── */}
         {tab === "history" && (
           <HistoryPanel
             items={history}
             onDelete={handleDeleteHistory}
             onClear={handleClearHistory}
             onOpenPath={handleOpenPath}
+          />
+        )}
+
+        {/* ── Settings Tab ──────────────────────────────────────────────── */}
+        {tab === "settings" && (
+          <SettingsPanel
+            settings={settings}
+            onChange={setSettings}
+            onSave={handleSaveSettings}
+            saved={settingsSaved}
           />
         )}
       </div>

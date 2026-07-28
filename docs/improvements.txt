@@ -1,0 +1,2 @@
+* Need to make a chrome extension which adds a button on youtube's 
+video page itself and launches the app's core (yt-dlp) to download the video. 

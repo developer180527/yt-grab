@@ -65,6 +65,35 @@ pub struct HistoryItem {
     pub created_at: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct Settings {
+    pub default_save_folder: String,
+    pub default_format: String,
+    pub embed_thumbnail: bool,
+    pub embed_subtitles: bool,
+    pub speed_limit: String,          // "" = no limit, "2M", "500K", etc.
+    pub cookies_browser: String,      // "" = off, "chrome", "firefox", "safari", "brave", "edge"
+    pub auto_open_folder: bool,
+    pub clear_queue_on_launch: bool,
+    pub auto_delete_history_days: u32, // 0 = never
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            default_save_folder: String::new(),
+            default_format: "best".to_string(),
+            embed_thumbnail: false,
+            embed_subtitles: false,
+            speed_limit: String::new(),
+            cookies_browser: String::new(),
+            auto_open_folder: false,
+            clear_queue_on_launch: false,
+            auto_delete_history_days: 0,
+        }
+    }
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 fn ytdlp_cmd() -> std::process::Command {
@@ -121,7 +150,7 @@ fn unix_now() -> String {
         .to_string()
 }
 
-// ─── Commands ─────────────────────────────────────────────────────────────────
+// ─── Core Commands ────────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn check_ytdlp() -> Result<String, String> {
@@ -204,12 +233,21 @@ pub async fn start_download(
     format_id: String,
     output_dir: String,
     audio_only: bool,
+    // settings flags
+    embed_thumbnail: bool,
+    embed_subtitles: bool,
+    speed_limit: String,
+    cookies_browser: String,
 ) -> Result<(), String> {
     let mut cmd = ytdlp_cmd();
     cmd.arg("--progress").arg("--newline").arg("--no-playlist");
 
+    // ── Format ───────────────────────────────────────────────────────────────
     if audio_only {
         cmd.args(["-x", "--audio-format", "mp3", "--audio-quality", "0"]);
+        if embed_thumbnail {
+            cmd.arg("--embed-thumbnail");
+        }
     } else {
         match format_id.as_str() {
             "best"  => { cmd.args(["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"]); }
@@ -218,6 +256,18 @@ pub async fn start_download(
             "480p"  => { cmd.args(["-f", "bestvideo[height<=480]+bestaudio/best[height<=480]",   "--merge-output-format", "mp4"]); }
             other   => { cmd.args(["-f", other]); }
         }
+        if embed_thumbnail { cmd.arg("--embed-thumbnail"); }
+        if embed_subtitles { cmd.args(["--write-auto-subs", "--embed-subs", "--sub-langs", "en"]); }
+    }
+
+    // ── Speed limit ──────────────────────────────────────────────────────────
+    if !speed_limit.trim().is_empty() {
+        cmd.args(["--rate-limit", speed_limit.trim()]);
+    }
+
+    // ── Cookies ──────────────────────────────────────────────────────────────
+    if !cookies_browser.trim().is_empty() {
+        cmd.args(["--cookies-from-browser", cookies_browser.trim()]);
     }
 
     cmd.args(["-o", &format!("{}/%(title)s.%(ext)s", output_dir)])
@@ -264,14 +314,13 @@ pub async fn start_download(
             if let Some(mut c) = map.remove(&id_p) {
                 c.wait().map(|s| s.success()).unwrap_or(false)
             } else {
-                return; // cancelled
+                return;
             }
         };
 
         if exit_ok {
             let _ = app_p.emit("download:complete", CompletePayload {
-                id: id_p.clone(),
-                path: last_dest.clone(),
+                id: id_p.clone(), path: last_dest.clone(),
             });
             let db = db_arc.lock().unwrap();
             let _ = db.execute(
@@ -299,8 +348,7 @@ pub async fn start_download(
 
         if !errors.is_empty() {
             let _ = app_e.emit("download:error", ErrorPayload {
-                id: id_e.clone(),
-                message: errors.join("\n"),
+                id: id_e.clone(), message: errors.join("\n"),
             });
             let db = db_arc2.lock().unwrap();
             let _ = db.execute(
@@ -373,5 +421,51 @@ pub fn delete_history_item(state: State<'_, AppState>, id: i64) -> Result<(), St
 pub fn clear_history(state: State<'_, AppState>) -> Result<(), String> {
     let db = state.db.lock().unwrap();
     db.execute("DELETE FROM history", []).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn purge_old_history(state: State<'_, AppState>, days: u32) -> Result<(), String> {
+    if days == 0 { return Ok(()); }
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let cutoff = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(days as u64 * 86400)
+        .to_string();
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "DELETE FROM history WHERE CAST(created_at AS INTEGER) < ?1",
+        rusqlite::params![cutoff],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ─── Settings Commands ────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn get_settings(state: State<'_, AppState>) -> Result<Settings, String> {
+    let db = state.db.lock().unwrap();
+    let result: rusqlite::Result<String> = db.query_row(
+        "SELECT value FROM settings WHERE key = 'settings'",
+        [],
+        |row| row.get(0),
+    );
+    match result {
+        Ok(json) => serde_json::from_str(&json).map_err(|e| e.to_string()),
+        Err(_)   => Ok(Settings::default()),
+    }
+}
+
+#[tauri::command]
+pub fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    let json = serde_json::to_string(&settings).map_err(|e| e.to_string())?;
+    let db = state.db.lock().unwrap();
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES ('settings', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![json],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }

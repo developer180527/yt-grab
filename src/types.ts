@@ -69,3 +69,15 @@ export interface HistoryItem {
   status: string;
   created_at: string;
 }
+
+export interface Settings {
+  default_save_folder: string;
+  default_format: string;
+  embed_thumbnail: boolean;
+  embed_subtitles: boolean;
+  speed_limit: string;
+  cookies_browser: string;
+  auto_open_folder: boolean;
+  clear_queue_on_launch: boolean;
+  auto_delete_history_days: number;
+}

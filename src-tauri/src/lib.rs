@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
-use tauri::Manager;  // ← add this
+use tauri::Manager;
 
 pub use commands::AppState;
 
@@ -30,8 +30,12 @@ pub fn run() {
                     output_path TEXT,
                     status      TEXT NOT NULL,
                     created_at  TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    key   TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );"
-            ).expect("failed to create history table");
+            ).expect("failed to create tables");
 
             app.manage(AppState {
                 downloads: Arc::new(Mutex::new(HashMap::<String, Child>::new())),
@@ -48,6 +52,9 @@ pub fn run() {
             commands::get_history,
             commands::delete_history_item,
             commands::clear_history,
+            commands::purge_old_history,
+            commands::get_settings,
+            commands::save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running yt-grab");

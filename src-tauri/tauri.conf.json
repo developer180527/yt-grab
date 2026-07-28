@@ -12,13 +12,17 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "FETCH",
+        "title": "",
+
         "width": 960,
         "height": 720,
         "resizable": true,
         "minWidth": 820,
         "minHeight": 580,
+
         "decorations": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
         "transparent": false,
         "center": true
       }
