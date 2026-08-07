@@ -12,7 +12,7 @@
     "withGlobalTauri": false,
     "windows": [
       {
-        "title": "",
+        "title": "yt-grab",
 
         "width": 960,
         "height": 720,
@@ -28,12 +28,26 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-src 'none'"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": []
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "A desktop GUI for yt-dlp",
+    "longDescription": "yt-grab is a desktop front-end for yt-dlp. Paste a URL, pick a quality, and download video or MP3 audio from YouTube, SoundCloud, Vimeo and 1000+ other sites.",
+    "linux": {
+      "deb": {
+        "depends": ["yt-dlp", "ffmpeg"]
+      }
+    }
   }
 }

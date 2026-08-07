@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { useState } from "react";
 import type { HistoryItem } from "../types";
 
 interface Props {
@@ -8,15 +8,33 @@ interface Props {
   onOpenPath: (path: string) => void;
 }
 
+/** `created_at` is stored as unix seconds in a TEXT column. */
+function parseTs(unixStr: string): number | null {
+  const n = Number.parseInt(unixStr, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 function timeAgo(unixStr: string) {
-  const secs = Math.floor(Date.now() / 1000) - parseInt(unixStr, 10);
-  if (secs < 60)  return "just now";
+  const ts = parseTs(unixStr);
+  if (ts === null) return "unknown";
+  // Clamp: a clock change (or a row written by a machine in another timezone
+  // setup) could otherwise render "-3m ago".
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+  if (secs < 60) return "just now";
   if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
+  if (secs < 86400 * 30) return `${Math.floor(secs / 86400)}d ago`;
+  return `${Math.floor(secs / (86400 * 30))}mo ago`;
+}
+
+function fullDate(unixStr: string) {
+  const ts = parseTs(unixStr);
+  return ts === null ? "" : new Date(ts * 1000).toLocaleString();
 }
 
 export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: Props) {
+  const [confirmClear, setConfirmClear] = useState(false);
+
   if (items.length === 0) {
     return (
       <div className="empty">
@@ -31,14 +49,30 @@ export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: P
       <div className="queue-top">
         <span className="queue-heading">HISTORY</span>
         <span className="pill">{items.length} items</span>
-        <button
-          className="act-btn danger"
-          style={{ marginLeft: "auto" }}
-          onClick={onClear}
-          title="Clear all history"
-        >
-          Clear all
-        </button>
+        {/* Two-step, because this wipes every row with no undo. */}
+        {confirmClear ? (
+          <>
+            <button
+              className="act-btn act-btn-text danger"
+              style={{ marginLeft: "auto" }}
+              onClick={() => { onClear(); setConfirmClear(false); }}
+            >
+              Delete {items.length} entries
+            </button>
+            <button className="act-btn act-btn-text" onClick={() => setConfirmClear(false)}>
+              Cancel
+            </button>
+          </>
+        ) : (
+          <button
+            className="act-btn act-btn-text danger"
+            style={{ marginLeft: "auto" }}
+            onClick={() => setConfirmClear(true)}
+            title="Clear all history"
+          >
+            Clear all
+          </button>
+        )}
       </div>
 
       <div className="queue-list">
@@ -52,7 +86,7 @@ export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: P
               )}
 
               <div className="dl-info">
-                <div className="dl-title">{item.title}</div>
+                <div className="dl-title" title={item.title}>{item.title}</div>
                 <div className="dl-meta">
                   <span className={`status-chip ${item.status}`}>
                     {item.status === "completed" ? "DONE" : "FAILED"}
@@ -62,7 +96,7 @@ export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: P
                       <span className="stat-k">fmt</span>
                       <span>{item.audio_only ? "MP3" : item.format_id.toUpperCase()}</span>
                     </span>
-                    <span>{timeAgo(item.created_at)}</span>
+                    <span title={fullDate(item.created_at)}>{timeAgo(item.created_at)}</span>
                   </div>
                 </div>
               </div>
@@ -72,7 +106,7 @@ export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: P
                   <button
                     className="act-btn success"
                     onClick={() => onOpenPath(item.output_path!)}
-                    title="Reveal in Finder"
+                    title="Reveal in file manager"
                   >
                     ⌘
                   </button>

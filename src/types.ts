@@ -21,6 +21,17 @@ export interface MediaInfo {
 
 export type DownloadStatus = "queued" | "downloading" | "completed" | "failed" | "cancelled";
 
+/** Which pass yt-dlp is on. Video and audio arrive as separate streams, so the
+ *  progress bar legitimately restarts at 0% — the stage label says why. */
+export type DownloadStage = "video" | "audio" | "merging" | "processing";
+
+export const STAGE_LABEL: Record<DownloadStage, string> = {
+  video:      "video",
+  audio:      "audio",
+  merging:    "merging",
+  processing: "processing",
+};
+
 export interface DownloadItem {
   id: string;
   url: string;
@@ -34,7 +45,9 @@ export interface DownloadItem {
   speed: string;
   eta: string;
   size: string;
-  downloaded: string;
+  stage: DownloadStage;
+  /** Real size of the finished file on disk, in bytes. */
+  final_size: number | null;
   error: string | null;
   output_path: string | null;
 }
@@ -53,9 +66,9 @@ export const FORMAT_PRESETS: FormatPreset[] = [
 ];
 
 export interface ProgressPayload {
-  id: string; percent: number; speed: string; eta: string; size: string; downloaded: string;
+  id: string; percent: number; speed: string; eta: string; size: string; stage: DownloadStage;
 }
-export interface CompletePayload { id: string; path: string; }
+export interface CompletePayload { id: string; path: string; size: number | null; }
 export interface ErrorPayload    { id: string; message: string; }
 
 export interface HistoryItem {
@@ -78,6 +91,5 @@ export interface Settings {
   speed_limit: string;
   cookies_browser: string;
   auto_open_folder: boolean;
-  clear_queue_on_launch: boolean;
   auto_delete_history_days: number;
 }

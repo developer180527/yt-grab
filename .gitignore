@@ -23,4 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 
-src-tauri/icons/
+# NOTE: src-tauri/icons/ is deliberately NOT ignored — `tauri build` reads the
+# bundle icons from there, so they have to be committed. Regenerate them from
+# the master artwork with:  npm run tauri icon Assets/<name>.icns
+src-tauri/icons/new_icon2.png

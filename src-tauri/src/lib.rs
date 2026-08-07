@@ -1,6 +1,6 @@
 mod commands;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Child;
 use std::sync::{Arc, Mutex};
 use rusqlite::Connection;
@@ -39,12 +39,14 @@ pub fn run() {
 
             app.manage(AppState {
                 downloads: Arc::new(Mutex::new(HashMap::<String, Child>::new())),
+                cancelled: Arc::new(Mutex::new(HashSet::<String>::new())),
                 db: Arc::new(Mutex::new(conn)),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             commands::check_ytdlp,
+            commands::check_ffmpeg,
             commands::fetch_media_info,
             commands::start_download,
             commands::cancel_download,

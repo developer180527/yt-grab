@@ -1,12 +1,13 @@
+import { useEffect, useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Settings } from "../types";
 import { FORMAT_PRESETS } from "../types";
 
 interface Props {
   settings: Settings;
-  onChange: (s: Settings) => void;
-  onSave: () => void;
+  onSave: (next: Settings) => void;
   saved: boolean;
+  error: string | null;
 }
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
@@ -25,9 +26,38 @@ function SectionHead({ title }: { title: string }) {
   return <div className="settings-section">{title}</div>;
 }
 
-export default function SettingsPanel({ settings, onChange, onSave, saved }: Props) {
+function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
+  return (
+    <div
+      className="toggle-wrap"
+      role="switch"
+      aria-checked={on}
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === " " || e.key === "Enter") { e.preventDefault(); onClick(); }
+      }}
+    >
+      <div className={`toggle-track ${on ? "on" : ""}`}>
+        <div className="toggle-thumb" />
+      </div>
+      <span className="toggle-label">{on ? "On" : "Off"}</span>
+    </div>
+  );
+}
+
+export default function SettingsPanel({ settings, onSave, saved, error }: Props) {
+  // Edits live in a local draft so nothing takes effect until Save is pressed.
+  // Previously every toggle mutated the settings the next download would use,
+  // which made the Save button meaningless.
+  const [draft, setDraft] = useState<Settings>(settings);
+
+  useEffect(() => { setDraft(settings); }, [settings]);
+
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
+
   function set<K extends keyof Settings>(key: K, value: Settings[K]) {
-    onChange({ ...settings, [key]: value });
+    setDraft((d) => ({ ...d, [key]: value }));
   }
 
   async function pickFolder() {
@@ -43,17 +73,26 @@ export default function SettingsPanel({ settings, onChange, onSave, saved }: Pro
 
       <Row label="Default save folder" hint="Used when app starts">
         <div className="path-row">
-          <div className="path-val" title={settings.default_save_folder}>
-            {settings.default_save_folder || "Not set — uses system Downloads"}
+          <div className="path-val" title={draft.default_save_folder}>
+            {draft.default_save_folder || "Not set — uses system Downloads"}
           </div>
           <button className="btn-icon" onClick={pickFolder} title="Choose folder">⌘</button>
+          {draft.default_save_folder && (
+            <button
+              className="btn-icon"
+              onClick={() => set("default_save_folder", "")}
+              title="Reset to system Downloads"
+            >
+              ✕
+            </button>
+          )}
         </div>
       </Row>
 
       <Row label="Default format">
         <select
           className="select"
-          value={settings.default_format}
+          value={draft.default_format}
           onChange={(e) => set("default_format", e.target.value)}
         >
           {FORMAT_PRESETS.map((p) => (
@@ -65,28 +104,12 @@ export default function SettingsPanel({ settings, onChange, onSave, saved }: Pro
       {/* ── yt-dlp Behaviour ──────────────────────────────────────────────── */}
       <SectionHead title="yt-dlp Behaviour" />
 
-      <Row label="Embed thumbnail" hint="Adds cover art to MP3 and MP4">
-        <div
-          className="toggle-wrap"
-          onClick={() => set("embed_thumbnail", !settings.embed_thumbnail)}
-        >
-          <div className={`toggle-track ${settings.embed_thumbnail ? "on" : ""}`}>
-            <div className="toggle-thumb" />
-          </div>
-          <span className="toggle-label">{settings.embed_thumbnail ? "On" : "Off"}</span>
-        </div>
+      <Row label="Embed thumbnail" hint="Adds cover art to MP3 and MP4 — needs ffmpeg">
+        <Toggle on={draft.embed_thumbnail} onClick={() => set("embed_thumbnail", !draft.embed_thumbnail)} />
       </Row>
 
       <Row label="Embed subtitles" hint="Auto-downloads and embeds English subs">
-        <div
-          className="toggle-wrap"
-          onClick={() => set("embed_subtitles", !settings.embed_subtitles)}
-        >
-          <div className={`toggle-track ${settings.embed_subtitles ? "on" : ""}`}>
-            <div className="toggle-thumb" />
-          </div>
-          <span className="toggle-label">{settings.embed_subtitles ? "On" : "Off"}</span>
-        </div>
+        <Toggle on={draft.embed_subtitles} onClick={() => set("embed_subtitles", !draft.embed_subtitles)} />
       </Row>
 
       <Row label="Speed limit" hint="e.g. 2M, 500K — leave empty for unlimited">
@@ -95,7 +118,7 @@ export default function SettingsPanel({ settings, onChange, onSave, saved }: Pro
           style={{ height: "40px", padding: "0 12px", fontSize: "13px" }}
           type="text"
           placeholder="Unlimited"
-          value={settings.speed_limit}
+          value={draft.speed_limit}
           onChange={(e) => set("speed_limit", e.target.value)}
           spellCheck={false}
         />
@@ -104,49 +127,32 @@ export default function SettingsPanel({ settings, onChange, onSave, saved }: Pro
       <Row label="Cookies from browser" hint="Lets yt-dlp access age-restricted or members-only content">
         <select
           className="select"
-          value={settings.cookies_browser}
+          value={draft.cookies_browser}
           onChange={(e) => set("cookies_browser", e.target.value)}
         >
           <option value="">Off</option>
           <option value="chrome">Chrome</option>
+          <option value="chromium">Chromium</option>
           <option value="firefox">Firefox</option>
           <option value="safari">Safari</option>
           <option value="brave">Brave</option>
           <option value="edge">Edge</option>
+          <option value="opera">Opera</option>
+          <option value="vivaldi">Vivaldi</option>
         </select>
       </Row>
 
       {/* ── App Behaviour ─────────────────────────────────────────────────── */}
       <SectionHead title="App Behaviour" />
 
-      <Row label="Auto-open folder on complete" hint="Reveals file in Finder when download finishes">
-        <div
-          className="toggle-wrap"
-          onClick={() => set("auto_open_folder", !settings.auto_open_folder)}
-        >
-          <div className={`toggle-track ${settings.auto_open_folder ? "on" : ""}`}>
-            <div className="toggle-thumb" />
-          </div>
-          <span className="toggle-label">{settings.auto_open_folder ? "On" : "Off"}</span>
-        </div>
+      <Row label="Auto-open folder on complete" hint="Reveals the file in your file manager when a download finishes">
+        <Toggle on={draft.auto_open_folder} onClick={() => set("auto_open_folder", !draft.auto_open_folder)} />
       </Row>
 
-      <Row label="Clear queue on launch" hint="Removes all items from queue when app starts">
-        <div
-          className="toggle-wrap"
-          onClick={() => set("clear_queue_on_launch", !settings.clear_queue_on_launch)}
-        >
-          <div className={`toggle-track ${settings.clear_queue_on_launch ? "on" : ""}`}>
-            <div className="toggle-thumb" />
-          </div>
-          <span className="toggle-label">{settings.clear_queue_on_launch ? "On" : "Off"}</span>
-        </div>
-      </Row>
-
-      <Row label="Auto-delete history" hint="Removes entries older than selected period">
+      <Row label="Auto-delete history" hint="Removes entries older than selected period, applied at launch">
         <select
           className="select"
-          value={String(settings.auto_delete_history_days)}
+          value={String(draft.auto_delete_history_days)}
           onChange={(e) => set("auto_delete_history_days", Number(e.target.value))}
         >
           <option value="0">Never</option>
@@ -157,9 +163,17 @@ export default function SettingsPanel({ settings, onChange, onSave, saved }: Pro
       </Row>
 
       {/* ── Save ──────────────────────────────────────────────────────────── */}
+      {error && (
+        <div className="banner error">
+          <span className="banner-icon">⚠</span>
+          <span>{error}</span>
+        </div>
+      )}
+
       <div className="settings-footer">
-        <button className="btn-download" onClick={onSave}>
-          {saved ? "✓ Saved" : "Save Settings"}
+        {dirty && <span className="settings-hint">Unsaved changes</span>}
+        <button className="btn-download" onClick={() => onSave(draft)} disabled={!dirty && !saved}>
+          {saved && !dirty ? "✓ Saved" : "Save Settings"}
         </button>
       </div>
 
