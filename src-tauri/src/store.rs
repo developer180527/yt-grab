@@ -251,9 +251,11 @@ mod tests {
         let c = db();
         assert_eq!(load_settings(&c).max_concurrent, Settings::default().max_concurrent);
 
-        let mut s = Settings::default();
-        s.default_format = "1080p".into();
-        s.max_concurrent = 5;
+        let s = Settings {
+            default_format: "1080p".into(),
+            max_concurrent: 5,
+            ..Default::default()
+        };
         save_settings(&c, &s).unwrap();
 
         let back = load_settings(&c);
@@ -295,6 +297,54 @@ mod tests {
 
         delete_rule(&c, "a.com").unwrap();
         assert_eq!(list_rules(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_patch_can_clear_a_field_back_to_none() {
+        let c = db();
+        patch_rule(&c, "x.com", |r| r.cookies_browser = Some("chrome".into())).unwrap();
+        patch_rule(&c, "x.com", |r| r.cookies_browser = None).unwrap();
+        assert_eq!(get_rule(&c, "x.com").unwrap().cookies_browser, None);
+    }
+
+    #[test]
+    fn a_rule_round_trips_every_field_including_the_boolean() {
+        let c = db();
+        upsert_rule(&c, &SiteRule {
+            domain: "bandcamp.com".into(),
+            cookies_browser: Some("firefox".into()),
+            cookies_file: Some("/c.txt".into()),
+            output_dir: Some("/music".into()),
+            format_id: Some("best".into()),
+            audio_only: Some(false),
+        }).unwrap();
+
+        let r = get_rule(&c, "bandcamp.com").unwrap();
+        assert_eq!(r.cookies_browser.as_deref(), Some("firefox"));
+        assert_eq!(r.cookies_file.as_deref(), Some("/c.txt"));
+        assert_eq!(r.output_dir.as_deref(), Some("/music"));
+        assert_eq!(r.format_id.as_deref(), Some("best"));
+        // Distinguishing Some(false) from None matters: one says "video", the
+        // other says "the rule has no opinion".
+        assert_eq!(r.audio_only, Some(false));
+    }
+
+    #[test]
+    fn completed_urls_deduplicates_and_excludes_failures() {
+        let c = db();
+        insert_history(&c, "u1", "t", &None, "best", false, Some("/a"), "completed");
+        insert_history(&c, "u1", "t", &None, "720p", false, Some("/b"), "completed");
+        insert_history(&c, "u2", "t", &None, "best", false, None, "failed");
+        assert_eq!(completed_urls(&c).unwrap(), vec!["u1"]);
+    }
+
+    #[test]
+    fn history_is_returned_newest_first() {
+        let c = db();
+        insert_history(&c, "old", "t", &None, "best", false, None, "completed");
+        insert_history(&c, "new", "t", &None, "best", false, None, "completed");
+        let h = get_history(&c).unwrap();
+        assert_eq!(h[0].url, "new");
     }
 
     #[test]

@@ -133,6 +133,10 @@ export interface DownloadItem {
   format_id: string;
   output_dir: string;
   audio_only: boolean;
+  /** Whether the chosen exact format needs a separate audio stream merged in.
+   *  Kept on the item so a retry rebuilds the same request — without it, a
+   *  retried video-only format would be re-fetched silent. */
+  merge_audio: boolean;
   status: DownloadStatus;
   percent: number;
   speed: string;
@@ -180,6 +184,18 @@ export interface HistoryItem {
   output_path: string | null;
   status: string;
   created_at: string;
+}
+
+/** What a site's rule pre-selects, applied after a resolve. A rule's format and
+ *  audio-only are starting points for the panel, not settings applied behind
+ *  the user's back — a grab uses whatever the panel shows when Grab is pressed. */
+export interface SiteDefaults {
+  domain: string | null;
+  has_rule: boolean;
+  format_id: string;
+  audio_only: boolean;
+  /** Present only when a rule names a folder. */
+  output_dir: string | null;
 }
 
 export interface SiteRule {

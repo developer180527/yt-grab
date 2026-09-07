@@ -96,6 +96,35 @@ mod tests {
     }
 
     #[test]
+    fn settings_from_a_newer_build_do_not_wipe_the_known_fields() {
+        // serde ignores unknown keys, so a blob written by a build with extra
+        // options still round-trips everything this build understands.
+        let future = r#"{"default_format":"480p","max_concurrent":5,
+            "some_option_added_later":true,"another":{"nested":1}}"#;
+        let s: Settings = serde_json::from_str(future).expect("unknown keys must be ignored");
+        assert_eq!(s.default_format, "480p");
+        assert_eq!(s.max_concurrent, 5);
+    }
+
+    #[test]
+    fn settings_survive_a_round_trip_through_json() {
+        let before = Settings {
+            subtitle_langs: "en,ja".into(),
+            prefer_mp4: true,
+            audio_format: "m4a".into(),
+            max_concurrent: 4,
+            ..Default::default()
+        };
+
+        let after: Settings =
+            serde_json::from_str(&serde_json::to_string(&before).unwrap()).unwrap();
+        assert_eq!(after.subtitle_langs, "en,ja");
+        assert!(after.prefer_mp4);
+        assert_eq!(after.audio_format, "m4a");
+        assert_eq!(after.max_concurrent, 4);
+    }
+
+    #[test]
     fn audio_defaults_to_keeping_the_source_codec() {
         assert_eq!(Settings::default().audio_format, "best");
     }

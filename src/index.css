@@ -1285,3 +1285,38 @@ input, textarea {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Disabled while the editor is open, so a stray click can't delete or start
+   editing a second rule behind the one being changed. */
+.act-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* The editor replaces its row in place, so it is inset and bounded to read as
+   "this rule", not as another settings section. */
+.rule-editor {
+  border-top: 1px solid var(--bevel-mid);
+  border-bottom: 1px solid var(--bevel-mid);
+  background: rgba(0,0,0,0.16);
+}
+.rule-editor .settings-row {
+  padding-left: 18px;
+  padding-right: 18px;
+}
+.rule-editor .settings-row-label { flex-basis: 180px; }
+
+.rule-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(0,0,0,0.35);
+}
+
+.rule-add {
+  display: flex;
+  padding: 10px 14px;
+}

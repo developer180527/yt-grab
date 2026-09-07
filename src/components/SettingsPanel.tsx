@@ -11,6 +11,8 @@ interface Props {
   saved: boolean;
   error: string | null;
   rules: SiteRule[];
+  /** Creates or updates a rule. Rejects with a message the editor shows inline. */
+  onSaveRule: (rule: SiteRule, isNew: boolean) => Promise<void>;
   onDeleteRule: (domain: string) => void;
   tools: ToolStatus | null;
 }
@@ -57,14 +59,203 @@ function describeRule(r: SiteRule): string {
   if (r.cookies_browser) parts.push(`${r.cookies_browser} cookies`);
   if (r.cookies_file) parts.push("cookies.txt");
   if (r.format_id) parts.push(r.format_id);
-  if (r.audio_only) parts.push("audio only");
+  // A rule that says "video" is not the same as one with no opinion — only the
+  // first overrides a global audio-only default, so it has to be visible here.
+  if (r.audio_only === true) parts.push("audio only");
+  else if (r.audio_only === false) parts.push("video");
   if (r.output_dir) parts.push(`→ ${r.output_dir}`);
   return parts.length ? parts.join(" · ") : "no overrides";
 }
 
+/** Sentinel for "the rule has no opinion here" — distinct from any real value. */
+const NO_PREFERENCE = "\u0000none";
+
+const EMPTY_RULE: SiteRule = {
+  domain: "",
+  cookies_browser: null,
+  cookies_file: null,
+  output_dir: null,
+  format_id: null,
+  audio_only: null,
+};
+
+/**
+ * Creates or edits one site rule.
+ *
+ * Every override is optional, and absent means "no opinion" — the global
+ * default applies. That distinction is the entire point of a rule, so each
+ * control offers it explicitly instead of collapsing it into an empty value:
+ * a rule saying "video" is not the same as a rule that says nothing about
+ * audio, and only the first one overrides a global audio-only default.
+ */
+function RuleEditor({
+  initial, onSave, onCancel,
+}: {
+  /** The rule to edit, or null to create one. */
+  initial: SiteRule | null;
+  onSave: (rule: SiteRule, isNew: boolean) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<SiteRule>(initial ?? EMPTY_RULE);
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const isNew = initial === null;
+
+  function set<K extends keyof SiteRule>(key: K, value: SiteRule[K]) {
+    setDraft((d) => ({ ...d, [key]: value }));
+  }
+
+  // The two cookie sources are mutually exclusive because yt-dlp is given only
+  // one, and a file always wins. Keeping both would advertise a browser setting
+  // that never takes effect.
+  function setBrowser(value: string) {
+    setDraft((d) => ({
+      ...d,
+      cookies_browser: value === NO_PREFERENCE ? null : value,
+      cookies_file: value === NO_PREFERENCE ? d.cookies_file : null,
+    }));
+  }
+
+  async function pickCookiesFile() {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: "Cookies", extensions: ["txt"] }],
+    });
+    if (typeof selected === "string") {
+      setDraft((d) => ({ ...d, cookies_file: selected, cookies_browser: null }));
+    }
+  }
+
+  async function pickRuleFolder() {
+    const selected = await openDialog({ directory: true, multiple: false });
+    if (typeof selected === "string") set("output_dir", selected);
+  }
+
+  async function save() {
+    setBusy(true);
+    setErr(null);
+    try {
+      await onSave(draft, isNew);
+    } catch (e) {
+      // Stay open with the message: closing would lose everything typed.
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="rule-editor">
+      <Row label="Site" hint={isNew ? "A domain, or a link from the site" : "A rule is keyed by site and can't be renamed"}>
+        {isNew ? (
+          <input
+            className="url-input"
+            style={{ height: "40px", padding: "0 12px", fontSize: "13px" }}
+            type="text"
+            placeholder="youtube.com"
+            value={draft.domain}
+            onChange={(e) => set("domain", e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && draft.domain.trim()) void save(); }}
+            spellCheck={false}
+            autoComplete="off"
+            autoCapitalize="off"
+            autoFocus
+          />
+        ) : (
+          <div className="static-field">{draft.domain}</div>
+        )}
+      </Row>
+
+      <Row label="Save to" hint="Where downloads from this site land">
+        <div className="path-row">
+          <div className="path-val" title={draft.output_dir ?? ""}>
+            {draft.output_dir || "No preference — uses the default folder"}
+          </div>
+          <button className="btn-icon" onClick={pickRuleFolder} title="Choose folder">⌘</button>
+          {draft.output_dir && (
+            <button className="btn-icon" onClick={() => set("output_dir", null)} title="Clear">✕</button>
+          )}
+        </div>
+      </Row>
+
+      <Row label="Quality" hint="What the panel opens on for this site">
+        <select
+          className="select"
+          value={draft.format_id ?? NO_PREFERENCE}
+          onChange={(e) => set("format_id", e.target.value === NO_PREFERENCE ? null : e.target.value)}
+        >
+          <option value={NO_PREFERENCE}>No preference</option>
+          {FORMAT_PRESETS.map((p) => (
+            <option key={p.id} value={p.id}>{p.label} — {p.detail}</option>
+          ))}
+        </select>
+      </Row>
+
+      <Row label="Audio only" hint="Bandcamp wants audio; the same default would be wrong for YouTube">
+        <select
+          className="select"
+          value={draft.audio_only === null ? NO_PREFERENCE : String(draft.audio_only)}
+          onChange={(e) =>
+            set("audio_only", e.target.value === NO_PREFERENCE ? null : e.target.value === "true")}
+        >
+          <option value={NO_PREFERENCE}>No preference</option>
+          <option value="true">Audio only</option>
+          <option value="false">Video</option>
+        </select>
+      </Row>
+
+      <Row label="Cookies from browser" hint="Overrides the global browser for this site">
+        <select
+          className="select"
+          value={draft.cookies_browser ?? NO_PREFERENCE}
+          onChange={(e) => setBrowser(e.target.value)}
+        >
+          <option value={NO_PREFERENCE}>No preference</option>
+          {BROWSERS.map((b) => (
+            <option key={b} value={b}>{b[0].toUpperCase() + b.slice(1)}</option>
+          ))}
+        </select>
+      </Row>
+
+      <Row label="Cookies file" hint="An exported cookies.txt — more reliable than reading the browser, and takes precedence">
+        <div className="path-row">
+          <div className="path-val" title={draft.cookies_file ?? ""}>
+            {draft.cookies_file || "None"}
+          </div>
+          <button className="btn-icon" onClick={pickCookiesFile} title="Choose cookies.txt">⌘</button>
+          {draft.cookies_file && (
+            <button className="btn-icon" onClick={() => set("cookies_file", null)} title="Clear">✕</button>
+          )}
+        </div>
+      </Row>
+
+      {err && (
+        <div className="banner error">
+          <span className="banner-icon">⚠</span>
+          <span>{err}</span>
+        </div>
+      )}
+
+      <div className="rule-editor-actions">
+        <button className="act-btn act-btn-text" onClick={onCancel} disabled={busy}>Cancel</button>
+        <button
+          className="btn-download"
+          onClick={() => void save()}
+          disabled={busy || !draft.domain.trim()}
+          title={draft.domain.trim() ? undefined : "Name the site first"}
+        >
+          {busy ? "Saving…" : isNew ? "Add rule" : "Save rule"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function SettingsPanel({
-  settings, onSave, saved, error, rules, onDeleteRule, tools,
+  settings, onSave, saved, error, rules, onSaveRule, onDeleteRule, tools,
 }: Props) {
+  // Which rule the editor is open on: a domain, "" for a new one, or null for
+  // closed. Keyed by domain rather than index so the list can reorder freely.
+  const [editing, setEditing] = useState<string | null>(null);
   // Edits live in a local draft so nothing takes effect until Save is pressed.
   const [draft, setDraft] = useState<Settings>(settings);
   useEffect(() => { setDraft(settings); }, [settings]);
@@ -208,20 +399,63 @@ export default function SettingsPanel({
 
       {/* ── Per-site rules ───────────────────────────────────────────────── */}
       <SectionHead title="Site rules" />
-      {rules.length === 0 ? (
+      {rules.length === 0 && editing === null ? (
         <div className="settings-note">
           Nothing yet. When a download fails because a site needs a login, accepting
-          the fix saves a rule here so you're only asked once.
+          the fix saves a rule here so you're only asked once — or add one below to
+          send a site's downloads to their own folder, quality or audio setting.
         </div>
       ) : (
         <div className="rules-list">
           {rules.map((r) => (
-            <div key={r.domain} className="rule-row">
-              <div className="rule-domain">{r.domain}</div>
-              <div className="rule-detail">{describeRule(r)}</div>
-              <button className="act-btn danger" onClick={() => onDeleteRule(r.domain)} title="Forget this rule">✕</button>
-            </div>
+            editing === r.domain ? (
+              <RuleEditor
+                key={r.domain}
+                initial={r}
+                onSave={async (rule, isNew) => { await onSaveRule(rule, isNew); setEditing(null); }}
+                onCancel={() => setEditing(null)}
+              />
+            ) : (
+              <div key={r.domain} className="rule-row">
+                <div className="rule-domain">{r.domain}</div>
+                <div className="rule-detail">{describeRule(r)}</div>
+                <button
+                  className="act-btn"
+                  onClick={() => setEditing(r.domain)}
+                  title="Edit this rule"
+                  disabled={editing !== null}
+                >
+                  ✎
+                </button>
+                <button
+                  className="act-btn danger"
+                  onClick={() => onDeleteRule(r.domain)}
+                  title="Forget this rule"
+                  disabled={editing !== null}
+                >
+                  ✕
+                </button>
+              </div>
+            )
           ))}
+        </div>
+      )}
+
+      {editing === "" ? (
+        <RuleEditor
+          initial={null}
+          onSave={async (rule, isNew) => { await onSaveRule(rule, isNew); setEditing(null); }}
+          onCancel={() => setEditing(null)}
+        />
+      ) : (
+        <div className="rule-add">
+          <button
+            className="act-btn act-btn-text"
+            onClick={() => setEditing("")}
+            disabled={editing !== null}
+          >
+            + Add a site rule
+          </button>
         </div>
       )}
 

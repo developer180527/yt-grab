@@ -10,8 +10,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   CompletePayload, DeepLinkPayload, Failure, FailurePayload, GrabRequest,
-  HistoryItem, MediaInfo, ProgressPayload, Settings, SiteRule, StartedPayload,
-  ToolStatus,
+  HistoryItem, MediaInfo, ProgressPayload, Settings, SiteDefaults, SiteRule,
+  StartedPayload, ToolStatus,
 } from "./types";
 
 // ─── Environment ──────────────────────────────────────────────────────────────
@@ -22,6 +22,10 @@ export const toolStatus = () => invoke<ToolStatus>("tool_status");
 
 /** Looks up what is at a URL, applying the site's cookie rule. */
 export const resolveUrl = (url: string) => invoke<MediaInfo>("resolve_url", { url });
+
+/** The choices a site's rule pre-selects. Fetched right after a resolve so the
+ *  panel opens on the right format and folder for that site. */
+export const siteDefaults = (url: string) => invoke<SiteDefaults>("site_defaults", { url });
 
 /** Classifies an error string so a failed resolve gets the same remedy
  *  buttons as a failed download. */

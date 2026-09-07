@@ -25,7 +25,14 @@ struct DeepLinkPayload {
 /// bar and the user still presses Grab. Auto-starting here would let a page
 /// cause arbitrary network fetches and disk writes with one click.
 fn parse_deep_link(raw: &str) -> Option<String> {
-    let rest = raw.strip_prefix("ytgrab://")?;
+    // Schemes are case-insensitive, and a hand-written link or a different OS
+    // can hand one back in any case.
+    const SCHEME: &str = "ytgrab://";
+    let raw = raw.trim();
+    if !raw.get(..SCHEME.len())?.eq_ignore_ascii_case(SCHEME) {
+        return None;
+    }
+    let rest = &raw[SCHEME.len()..];
     let after_host = rest.split_once('?');
 
     let candidate = match after_host {
@@ -130,6 +137,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::tool_status,
             commands::resolve_url,
+            commands::site_defaults,
             commands::diagnose_error,
             commands::enqueue_grab,
             commands::cancel_grab,
@@ -186,6 +194,36 @@ mod tests {
         assert_eq!(parse_deep_link("ytgrab://add?url=file%3A%2F%2F%2Fetc%2Fpasswd"), None);
         assert_eq!(parse_deep_link("ytgrab://add?url=javascript%3Aalert(1)"), None);
         assert_eq!(parse_deep_link("ytgrab://add?url="), None);
+    }
+
+    #[test]
+    fn the_scheme_is_matched_case_insensitively() {
+        assert_eq!(
+            parse_deep_link("YTGrab://add?url=https%3A%2F%2Fx.com%2Fv").as_deref(),
+            Some("https://x.com/v")
+        );
+    }
+
+    #[test]
+    fn surrounding_whitespace_is_tolerated() {
+        assert_eq!(
+            parse_deep_link("  ytgrab://add?url=https%3A%2F%2Fx.com%2Fv  ").as_deref(),
+            Some("https://x.com/v")
+        );
+    }
+
+    #[test]
+    fn a_short_or_empty_input_does_not_panic() {
+        // `raw[..9]` on a shorter string would slice out of bounds.
+        for s in ["", "y", "ytgrab:/", "ytgrab://"] {
+            assert_eq!(parse_deep_link(s), None, "{s:?}");
+        }
+    }
+
+    #[test]
+    fn a_multibyte_input_does_not_panic_on_the_scheme_check() {
+        // Slicing the first 9 bytes must not split a character.
+        assert_eq!(parse_deep_link("日本語のテキスト"), None);
     }
 
     #[test]

@@ -79,10 +79,11 @@ Bundles land in `src-tauri/target/release/bundle/`.
 cd src-tauri && cargo test
 ```
 
-57 tests, covering yt-dlp output parsing, final-path detection across the
-merge/extract/move stages, failure classification, site-key extraction, rule
-merging, queue and cancellation behaviour, settings migration, and deep-link
-parsing.
+130 tests, covering yt-dlp command construction and output parsing,
+progress-line recognition, final-path detection across the merge/extract/move
+stages, failure classification and error-line selection, site-key extraction,
+rule merging and storage, queue and cancellation behaviour, settings migration,
+and deep-link parsing.
 
 ---
 

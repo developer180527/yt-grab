@@ -164,10 +164,12 @@ mod tests {
 
     #[test]
     fn a_rule_overrides_defaults_only_where_it_says_something() {
-        let mut s = Settings::default();
-        s.default_format = "best".into();
-        s.default_save_folder = "/downloads".into();
-        s.embed_thumbnail = true;
+        let s = Settings {
+            default_format: "best".into(),
+            default_save_folder: "/downloads".into(),
+            embed_thumbnail: true,
+            ..Default::default()
+        };
 
         let rule = SiteRule {
             domain: "bandcamp.com".into(),
@@ -181,6 +183,37 @@ mod tests {
         assert!(cfg.audio_only);
         assert_eq!(cfg.format_id, "best", "untouched by the rule, so the default stands");
         assert!(cfg.embed_thumbnail, "settings-only fields still apply");
+    }
+
+    #[test]
+    fn a_rule_can_supply_a_cookies_file_the_globals_have_no_slot_for() {
+        let s = Settings::default();
+        let rule = SiteRule {
+            domain: "instagram.com".into(),
+            cookies_file: Some("/tmp/ig.txt".into()),
+            ..Default::default()
+        };
+        let cfg = effective(&s, Some(&rule), "https://instagram.com/reel/x");
+        assert_eq!(cfg.cookies_file.as_deref(), Some("/tmp/ig.txt"));
+    }
+
+    #[test]
+    fn a_site_cookie_choice_overrides_the_global_browser() {
+        let s = Settings { cookies_browser: "chrome".into(), ..Default::default() };
+        let rule = SiteRule {
+            domain: "x.com".into(),
+            cookies_browser: Some("firefox".into()),
+            ..Default::default()
+        };
+        let cfg = effective(&s, Some(&rule), "https://x.com/v");
+        assert_eq!(cfg.cookies_browser, "firefox");
+    }
+
+    #[test]
+    fn the_global_browser_still_applies_where_no_rule_names_one() {
+        let s = Settings { cookies_browser: "chrome".into(), ..Default::default() };
+        let cfg = effective(&s, None, "https://elsewhere.com/v");
+        assert_eq!(cfg.cookies_browser, "chrome");
     }
 
     #[test]

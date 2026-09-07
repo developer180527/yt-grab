@@ -137,9 +137,17 @@ export default function App() {
     try {
       const info = await api.resolveUrl(trimmed);
       setMedia(info);
-      // An audio-only source has no resolutions to choose between.
-      setAudioOnly(info.audio_only_source);
-      setFormat(settingsRef.current.default_format || "best");
+
+      // Open the panel on this site's choices. These are starting points the
+      // user can still change — the grab uses whatever the panel shows — but
+      // without applying them a rule's format and audio-only would be written
+      // by a remedy and then never read.
+      const defaults = await api.siteDefaults(trimmed).catch(() => null);
+      // A source with no video track has no resolution to choose between, so
+      // that wins over any rule.
+      setAudioOnly(info.audio_only_source || (defaults?.audio_only ?? false));
+      setFormat(defaults?.format_id || settingsRef.current.default_format || "best");
+      if (defaults?.output_dir) setOutDir(defaults.output_dir);
     } catch (err) {
       // Classify, so the same remedy buttons appear as on a failed download.
       try {
@@ -183,7 +191,12 @@ export default function App() {
     formatId: string,
     isAudioOnly: boolean,
     mergeAudio: boolean,
+    /** Folder for this grab. A caller that has just chosen one must pass it:
+     *  `setOutDir` schedules state, so the `outDir` captured by this closure is
+     *  still the old folder — which is exactly the one that just failed. */
+    dirOverride?: string,
   ) => {
+    const dir = dirOverride ?? outDir;
     const id = crypto.randomUUID();
     setDownloads((prev) => [{
       id,
@@ -191,8 +204,9 @@ export default function App() {
       title: src.title,
       thumbnail: src.thumbnail,
       format_id: formatId,
-      output_dir: outDir,
+      output_dir: dir,
       audio_only: isAudioOnly,
+      merge_audio: mergeAudio,
       status: "queued",
       percent: 0,
       speed: "--", eta: "--", size: "--",
@@ -211,7 +225,7 @@ export default function App() {
         format_id: formatId,
         audio_only: isAudioOnly,
         merge_audio: mergeAudio,
-        output_dir: outDir || null,
+        output_dir: dir || null,
       });
     } catch (err) {
       const failure = await api.diagnoseError(src.url, String(err)).catch(() => null);
@@ -269,12 +283,19 @@ export default function App() {
     value: string | undefined,
     item: DownloadItem | null,
   ) => {
-    const retry = async (formatOverride?: string) => {
+    const retry = async (formatOverride?: string, dirOverride?: string) => {
       if (item) {
         setDownloads((prev) => prev.filter((d) => d.id !== item.id));
         await startGrab(
           { url: item.url, title: item.title, thumbnail: item.thumbnail },
-          formatOverride ?? item.format_id, item.audio_only, false,
+          formatOverride ?? item.format_id,
+          item.audio_only,
+          // Carry the original merge decision. Dropping it would re-fetch a
+          // video-only format without its audio stream and quietly produce a
+          // silent file. (A preset override makes it moot — the backend
+          // ignores merge_audio for presets — so passing it through is safe.)
+          item.merge_audio,
+          dirOverride,
         );
       } else {
         await runResolve(targetUrl);
@@ -316,7 +337,10 @@ export default function App() {
         const selected = await openDialog({ directory: true, multiple: false });
         if (typeof selected === "string") {
           setOutDir(selected);
-          await retry();
+          // Hand the new folder to the retry explicitly: `setOutDir` only
+          // schedules state, so the folder this closure captured is still the
+          // one that just failed to be written to.
+          await retry(undefined, selected);
         }
         break;
       }
@@ -366,6 +390,33 @@ export default function App() {
 
   async function handleDeleteRule(domain: string) {
     await api.deleteSiteRule(domain).catch(console.error);
+    loadRules();
+  }
+
+  /**
+   * Creates or updates a site rule.
+   *
+   * The domain is normalised through the backend rather than trusted as typed,
+   * so the key a rule is stored under is exactly the one a download looks it up
+   * by — otherwise a rule saved for "www.youtube.com" would never fire. It also
+   * means pasting a link from the site works as well as typing the domain.
+   *
+   * Errors are thrown rather than swallowed: the editor shows them inline, and
+   * a rule that silently failed to save is worse than one that didn't.
+   */
+  async function handleSaveRule(rule: SiteRule, isNew: boolean) {
+    const domain = await api.siteForUrl(rule.domain.trim());
+    if (!domain) {
+      throw new Error('That doesn\'t look like a site — try "youtube.com", or paste a link from it.');
+    }
+    // Normalising can land a new rule on an existing key ("www.instagram.com"
+    // and "instagram.com" are one site). Saving would replace that rule
+    // wholesale — wiping, say, the cookies a remedy stored there — so say so
+    // instead of quietly destroying it.
+    if (isNew && rules.some((r) => r.domain === domain)) {
+      throw new Error(`There's already a rule for ${domain}. Edit that one instead.`);
+    }
+    await api.setSiteRule({ ...rule, domain });
     loadRules();
   }
 
@@ -512,6 +563,7 @@ export default function App() {
             saved={settingsSaved}
             error={settingsErr}
             rules={rules}
+            onSaveRule={handleSaveRule}
             onDeleteRule={handleDeleteRule}
             tools={tools}
           />

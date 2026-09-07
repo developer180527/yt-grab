@@ -111,12 +111,16 @@ const PATTERNS: &[(FailureKind, &[&str])] = &[
         "rate limit",
     ]),
     (FailureKind::GeoBlocked, &[
-        "not available in your country",
-        "not available from your location",
-        "blocked in your country",
+        // The geography is the signal, not the verb: sites say "not available
+        // in your country", "unavailable in your country" and "blocked in your
+        // region" interchangeably.
+        "in your country",
+        "in your region",
+        "in your location",
         "geo restricted",
         "geo-restricted",
-        "video is not available in your region",
+        "geo blocked",
+        "geo-blocked",
     ]),
     (FailureKind::FormatUnavailable, &[
         "requested format is not available",
@@ -149,8 +153,15 @@ const PATTERNS: &[(FailureKind, &[&str])] = &[
         "ssl:",
     ]),
     (FailureKind::Unavailable, &[
+        // Every site phrases this around its own noun — "this tweet is
+        // unavailable", "this reel is unavailable", "video is unavailable" —
+        // so match the shape rather than enumerating nouns. Safe here because
+        // the auth, geo-block and format kinds are all tested before this one.
+        "is unavailable",
         "video unavailable",
+        "no longer available",
         "this video has been removed",
+        "removed by the uploader",
         "content isn't available",
         "this post is not available",
         "http error 404",
@@ -336,6 +347,89 @@ mod tests {
     fn dead_ends_offer_nothing_rather_than_a_pointless_retry() {
         assert!(diagnose("ERROR: not available in your country", None, true).remedies.is_empty());
         assert!(diagnose("ERROR: Unsupported URL: https://x/y", None, true).remedies.is_empty());
+    }
+
+    /// Messages copied from real yt-dlp runs against non-YouTube sites, which
+    /// is where classification earns its keep.
+    #[test]
+    fn classifies_real_messages_from_other_sites() {
+        let cases: &[(&str, FailureKind)] = &[
+            ("ERROR: [vimeo] 76979871: The web client only works when logged-in. Use --cookies, --cookies-from-browser, --username and --password",
+             FailureKind::NeedsAuth),
+            ("ERROR: [soundcloud] 12345: Unable to download JSON metadata: HTTP Error 429: Too Many Requests",
+             FailureKind::RateLimited),
+            ("ERROR: [generic] page: Unable to download webpage: <urlopen error [Errno 8] nodename nor servname provided>",
+             FailureKind::Network),
+            ("ERROR: [twitter] 999: This tweet is unavailable",
+             FailureKind::Unavailable),
+            ("ERROR: [instagram] abc: This reel is unavailable",
+             FailureKind::Unavailable),
+            ("ERROR: [bandcamp] x: The track is no longer available",
+             FailureKind::Unavailable),
+            ("ERROR: Unsupported URL: https://example.com/some/article",
+             FailureKind::Unsupported),
+        ];
+        for (msg, want) in cases {
+            assert_eq!(kind_of(msg), *want, "{msg}");
+        }
+    }
+
+    #[test]
+    fn the_broad_unavailable_match_does_not_swallow_more_specific_kinds() {
+        // "is unavailable" is deliberately loose, so the kinds tested before it
+        // must still win when a message contains both.
+        assert_eq!(
+            kind_of("ERROR: This video is unavailable in your country"),
+            FailureKind::GeoBlocked
+        );
+        assert_eq!(
+            kind_of("ERROR: Private video. This video is unavailable. Sign in to confirm"),
+            FailureKind::NeedsAuth
+        );
+        assert_eq!(
+            kind_of("ERROR: Requested format is not available"),
+            FailureKind::FormatUnavailable
+        );
+    }
+
+    #[test]
+    fn every_kind_produces_a_sentence_rather_than_a_blank() {
+        use FailureKind::*;
+        for k in [NeedsAuth, RateLimited, ToolOutdated, FormatUnavailable, Unsupported,
+                  GeoBlocked, Unavailable, MissingFfmpeg, Network, Disk, Unknown] {
+            let s = summary_for(k);
+            assert!(!s.trim().is_empty(), "{k:?} has no summary");
+            assert!(s.ends_with('.'), "{k:?} summary should read as a sentence");
+        }
+    }
+
+    #[test]
+    fn remedy_ids_are_never_duplicated_within_one_failure() {
+        // The UI keys buttons by id; a repeat would collide.
+        use FailureKind::*;
+        for k in [NeedsAuth, RateLimited, ToolOutdated, FormatUnavailable, Unsupported,
+                  GeoBlocked, Unavailable, MissingFfmpeg, Network, Disk, Unknown] {
+            let rs = remedies_for(k, Some("chrome"), true);
+            let mut ids: Vec<&str> = rs.iter().map(|r| r.id.as_str()).collect();
+            let before = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), before, "{k:?} repeats a remedy id");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_message_is_still_actionable() {
+        let f = diagnose("ERROR: something nobody has seen before", None, false);
+        assert_eq!(f.kind, FailureKind::Unknown);
+        assert!(!f.remedies.is_empty(), "unknown failures should still offer a retry");
+        assert_eq!(f.raw, "something nobody has seen before");
+    }
+
+    #[test]
+    fn a_message_with_no_error_line_is_kept_verbatim() {
+        let f = diagnose("just some text", None, false);
+        assert_eq!(f.raw, "just some text");
     }
 
     #[test]

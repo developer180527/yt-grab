@@ -32,3 +32,11 @@ src-tauri/icons/new_icon2.png
 # per platform, and that does not belong in git history.
 # Populate with:  npm run fetch-ytdlp
 src-tauri/binaries/
+
+# macOS writes a custom-folder-icon file whose name ends in a carriage return,
+# so a bare `Icon` rule does not match it — the `?` is that trailing character.
+Icon?
+
+# Claude Code's per-machine settings. `.claude/` itself is deliberately NOT
+# ignored: shared project config belongs in git, only the *.local one doesn't.
+.claude/settings.local.json

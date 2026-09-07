@@ -79,6 +79,46 @@ pub async fn resolve_url(state: State<'_, AppState>, url: String) -> Result<Medi
     Ok(ytdlp::media_from_json(&v, &url))
 }
 
+/// The choices a site's rule pre-selects, fetched right after a resolve.
+///
+/// A rule's format and audio-only are *defaults the UI starts from*, not
+/// settings applied behind the user's back: a download uses whatever the panel
+/// shows when Grab is pressed. Without this command those two rule fields would
+/// have no consumer at all — written by a remedy, then silently ignored.
+#[derive(serde::Serialize, Debug, PartialEq)]
+pub struct SiteDefaults {
+    pub domain: Option<String>,
+    pub has_rule: bool,
+    pub format_id: String,
+    pub audio_only: bool,
+    /// Present only when a rule names a folder, so applying these defaults
+    /// can't replace one the user just picked by hand.
+    pub output_dir: Option<String>,
+}
+
+impl SiteDefaults {
+    /// The pure half, so it can be tested without a database.
+    fn build(settings: &Settings, rule: Option<&SiteRule>, url: &str) -> Self {
+        let cfg = rules::effective(settings, rule, url);
+        Self {
+            domain: rules::site_key(url),
+            has_rule: rule.is_some(),
+            format_id: cfg.format_id,
+            audio_only: cfg.audio_only,
+            output_dir: rule.and_then(|r| r.output_dir.clone()),
+        }
+    }
+}
+
+#[tauri::command]
+pub fn site_defaults(state: State<'_, AppState>, url: String) -> Result<SiteDefaults, String> {
+    let db = lock(&state.db);
+    let settings = store::load_settings(&db);
+    let rule = rules::site_key(&url).and_then(|d| store::get_rule(&db, &d));
+    drop(db);
+    Ok(SiteDefaults::build(&settings, rule.as_ref(), &url))
+}
+
 /// Classifies a failure the UI already has the text for — used when a resolve
 /// fails, so the same remedy buttons appear as on a failed download.
 #[tauri::command]
@@ -159,6 +199,21 @@ pub fn queue_status(state: State<'_, AppState>) -> Result<(usize, usize), String
 
 // ─── Remedies ─────────────────────────────────────────────────────────────────
 
+/// Records one cookie source on a rule, clearing the other.
+///
+/// The two are mutually exclusive because `ytdlp` prefers the file: leaving a
+/// stale browser setting behind would make the rules list advertise something
+/// that never takes effect.
+fn set_cookie_source(rule: &mut SiteRule, remedy_id: &str, value: String) {
+    if remedy_id == remedy::COOKIES_FROM_BROWSER {
+        rule.cookies_browser = Some(value);
+        rule.cookies_file = None;
+    } else {
+        rule.cookies_file = Some(value);
+        rule.cookies_browser = None;
+    }
+}
+
 /// Applies the persistent part of a remedy and reports what changed.
 ///
 /// Remedies that need no stored state (plain retry, retry at best available)
@@ -179,13 +234,7 @@ pub fn apply_remedy(
             let value = value.ok_or_else(|| "Nothing chosen.".to_string())?;
             let db = lock(&state.db);
             let rule = store::patch_rule(&db, &domain, |r| {
-                if remedy_id == remedy::COOKIES_FROM_BROWSER {
-                    r.cookies_browser = Some(value.clone());
-                    r.cookies_file = None;
-                } else {
-                    r.cookies_file = Some(value.clone());
-                    r.cookies_browser = None;
-                }
+                set_cookie_source(r, &remedy_id, value)
             })
             .map_err(|e| e.to_string())?;
             Ok(Some(rule))
@@ -341,4 +390,117 @@ pub fn save_settings(
     state.set_concurrency(settings.max_concurrent);
     state.dispatch(&app);
     Ok(())
+}
+
+// ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rules::SiteRule;
+
+    fn settings() -> Settings {
+        Settings {
+            default_save_folder: "/downloads".into(),
+            default_format: "1080p".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn with_no_rule_the_defaults_are_the_global_ones() {
+        let d = SiteDefaults::build(&settings(), None, "https://vimeo.com/1");
+        assert_eq!(d.domain.as_deref(), Some("vimeo.com"));
+        assert!(!d.has_rule);
+        assert_eq!(d.format_id, "1080p");
+        assert!(!d.audio_only);
+        assert_eq!(d.output_dir, None, "no rule folder means the UI keeps its own");
+    }
+
+    #[test]
+    fn a_rule_supplies_the_choices_the_panel_should_open_with() {
+        // This is the only consumer of a rule's format/audio_only; without it
+        // those fields would be written by a remedy and never read.
+        let rule = SiteRule {
+            domain: "bandcamp.com".into(),
+            audio_only: Some(true),
+            format_id: Some("best".into()),
+            output_dir: Some("/music".into()),
+            ..Default::default()
+        };
+        let d = SiteDefaults::build(&settings(), Some(&rule), "https://x.bandcamp.com/album/y");
+
+        assert!(d.has_rule);
+        assert_eq!(d.format_id, "best", "rule beats the global default");
+        assert!(d.audio_only);
+        assert_eq!(d.output_dir.as_deref(), Some("/music"));
+        assert_eq!(d.domain.as_deref(), Some("bandcamp.com"));
+    }
+
+    #[test]
+    fn a_cookies_only_rule_does_not_move_the_users_folder() {
+        // The common case: a remedy saved cookies for a site and nothing else.
+        // That must not start redirecting where files land.
+        let rule = SiteRule {
+            domain: "instagram.com".into(),
+            cookies_browser: Some("chrome".into()),
+            ..Default::default()
+        };
+        let d = SiteDefaults::build(&settings(), Some(&rule), "https://instagram.com/reel/x");
+
+        assert!(d.has_rule);
+        assert_eq!(d.output_dir, None);
+        assert_eq!(d.format_id, "1080p", "untouched by the rule");
+        assert!(!d.audio_only);
+    }
+
+    #[test]
+    fn a_link_with_no_recognisable_site_still_yields_usable_defaults() {
+        let d = SiteDefaults::build(&settings(), None, "not a url");
+        assert_eq!(d.domain, None);
+        assert_eq!(d.format_id, "1080p");
+    }
+
+    // ── Cookie sources ────────────────────────────────────────────────────
+
+    #[test]
+    fn choosing_a_browser_clears_a_previously_imported_file() {
+        let mut r = SiteRule {
+            domain: "x.com".into(),
+            cookies_file: Some("/old/cookies.txt".into()),
+            ..Default::default()
+        };
+        set_cookie_source(&mut r, remedy::COOKIES_FROM_BROWSER, "firefox".into());
+
+        assert_eq!(r.cookies_browser.as_deref(), Some("firefox"));
+        assert_eq!(r.cookies_file, None, "the file would otherwise still win");
+    }
+
+    #[test]
+    fn importing_a_file_clears_a_previously_chosen_browser() {
+        let mut r = SiteRule {
+            domain: "x.com".into(),
+            cookies_browser: Some("chrome".into()),
+            ..Default::default()
+        };
+        set_cookie_source(&mut r, remedy::IMPORT_COOKIES_FILE, "/new/cookies.txt".into());
+
+        assert_eq!(r.cookies_file.as_deref(), Some("/new/cookies.txt"));
+        assert_eq!(r.cookies_browser, None);
+    }
+
+    #[test]
+    fn setting_a_cookie_source_leaves_the_rest_of_the_rule_alone() {
+        let mut r = SiteRule {
+            domain: "x.com".into(),
+            output_dir: Some("/keep".into()),
+            audio_only: Some(true),
+            ..Default::default()
+        };
+        set_cookie_source(&mut r, remedy::COOKIES_FROM_BROWSER, "safari".into());
+
+        assert_eq!(r.output_dir.as_deref(), Some("/keep"));
+        assert_eq!(r.audio_only, Some(true));
+        assert_eq!(r.domain, "x.com");
+    }
 }

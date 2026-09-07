@@ -141,24 +141,32 @@ impl AppState {
         Ok(())
     }
 
+    /// Takes the next job that should start, or `None` when the limit is
+    /// reached or nothing is waiting. Jobs cancelled while queued are discarded
+    /// on the way past.
+    ///
+    /// Split out from `dispatch` so the scheduling decision can be tested
+    /// without a running Tauri app. Callers must hold `dispatch_lock`.
+    fn claim_next(&self) -> Option<DownloadJob> {
+        loop {
+            let limit = *lock(&self.max_concurrent) as usize;
+            if lock(&self.downloads).len() >= limit {
+                return None;
+            }
+            let job = lock(&self.queue).pop_front()?;
+            if lock(&self.cancelled).remove(&job.id) {
+                continue;
+            }
+            return Some(job);
+        }
+    }
+
     /// Launches queued jobs until the concurrency limit is reached. Safe to
     /// call from anywhere: on enqueue, when a download finishes, and when the
     /// limit is raised in settings.
     pub fn dispatch(&self, app: &AppHandle) {
         let _guard = lock(&self.dispatch_lock);
-        loop {
-            let limit = *lock(&self.max_concurrent) as usize;
-            if lock(&self.downloads).len() >= limit {
-                return;
-            }
-            let job = match lock(&self.queue).pop_front() {
-                Some(j) => j,
-                None => return,
-            };
-            // Cancelled while it sat in the queue — drop it without a trace.
-            if lock(&self.cancelled).remove(&job.id) {
-                continue;
-            }
+        while let Some(job) = self.claim_next() {
             if let Err(e) = self.spawn_job(app, &job) {
                 self.report_failure(app, &job, &e);
             }
@@ -232,7 +240,7 @@ impl AppState {
                     }
                     final_path = Some(dest);
                 }
-                if line.contains("[download]") && line.contains('%') {
+                if ytdlp::is_progress_line(&line) {
                     let (percent, speed, eta, size) = ytdlp::parse_progress(&line);
                     let _ = app_p.emit("download:progress", ProgressPayload {
                         id: job.id.clone(), percent, speed, eta, size, stage: stage.clone(),
@@ -339,8 +347,7 @@ mod tests {
     use crate::settings::Settings;
 
     fn job(id: &str, url: &str, dir: &str) -> DownloadJob {
-        let mut s = Settings::default();
-        s.default_save_folder = dir.to_string();
+        let s = Settings { default_save_folder: dir.to_string(), ..Default::default() };
         DownloadJob {
             id: id.into(),
             url: url.into(),
@@ -404,6 +411,106 @@ mod tests {
         assert_eq!(ids, vec!["0", "2"]);
     }
 
+    // ── Scheduling decisions ──────────────────────────────────────────────
+    //
+    // `claim_next` is the whole scheduling policy. Occupying a slot needs a
+    // real `Child`, so these run on unix where `sleep` is guaranteed; the
+    // logic itself is platform-independent.
+
+    #[cfg(unix)]
+    fn occupy(s: &AppState, id: &str) {
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("sleep should exist");
+        lock(&s.downloads).insert(id.to_string(), RunningDownload { child, key: id.into() });
+    }
+
+    #[cfg(unix)]
+    fn release_all(s: &AppState) {
+        for (_, mut r) in lock(&s.downloads).drain() {
+            let _ = r.child.kill();
+            let _ = r.child.wait();
+        }
+    }
+
+    #[test]
+    fn claims_nothing_from_an_empty_queue() {
+        assert!(state().claim_next().is_none());
+    }
+
+    #[test]
+    fn claims_jobs_oldest_first() {
+        let s = state();
+        for (i, u) in ["a", "b", "c"].iter().enumerate() {
+            s.enqueue(job(&i.to_string(), &format!("https://x/{u}"), "/out")).unwrap();
+        }
+        assert_eq!(s.claim_next().unwrap().id, "0");
+        assert_eq!(s.claim_next().unwrap().id, "1");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claims_nothing_while_every_slot_is_busy() {
+        let s = state(); // limit 2
+        s.enqueue(job("1", "https://x/a", "/out")).unwrap();
+        occupy(&s, "running-1");
+        assert!(s.claim_next().is_some(), "one slot still free");
+
+        occupy(&s, "running-2");
+        s.enqueue(job("2", "https://x/b", "/out")).unwrap();
+        assert!(s.claim_next().is_none(), "at the limit, the job must wait");
+        assert_eq!(s.counts().1, 1, "and it stays in the queue");
+
+        release_all(&s);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn raising_the_limit_releases_a_waiting_job_immediately() {
+        let s = state();
+        occupy(&s, "running-1");
+        occupy(&s, "running-2");
+        s.enqueue(job("1", "https://x/a", "/out")).unwrap();
+        assert!(s.claim_next().is_none());
+
+        s.set_concurrency(3);
+        assert!(s.claim_next().is_some(), "the extra slot must be usable at once");
+
+        release_all(&s);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn lowering_the_limit_does_not_disturb_running_downloads() {
+        let s = state();
+        occupy(&s, "running-1");
+        occupy(&s, "running-2");
+        s.set_concurrency(1);
+
+        s.enqueue(job("1", "https://x/a", "/out")).unwrap();
+        assert!(s.claim_next().is_none(), "no new job starts");
+        assert_eq!(s.counts().0, 2, "the two already running are left alone");
+
+        release_all(&s);
+    }
+
+    #[test]
+    fn a_job_cancelled_while_queued_is_skipped_and_the_next_one_claimed() {
+        let s = state();
+        s.enqueue(job("1", "https://x/a", "/out")).unwrap();
+        s.enqueue(job("2", "https://x/b", "/out")).unwrap();
+
+        // Mark directly: `cancel` would remove it from the queue outright, but
+        // a job can also be marked between being claimed and being spawned.
+        lock(&s.cancelled).insert("1".to_string());
+
+        assert_eq!(s.claim_next().unwrap().id, "2");
+        assert!(lock(&s.cancelled).is_empty(), "the marker must not leak");
+    }
+
     #[test]
     fn concurrency_setting_is_clamped_on_the_way_in() {
         let s = state();
@@ -415,8 +522,7 @@ mod tests {
 
     #[test]
     fn a_site_rule_redirects_the_output_and_therefore_the_dedupe_key() {
-        let mut s = Settings::default();
-        s.default_save_folder = "/downloads".into();
+        let s = Settings { default_save_folder: "/downloads".into(), ..Default::default() };
         let rule = SiteRule {
             domain: "bandcamp.com".into(),
             output_dir: Some("/music".into()),

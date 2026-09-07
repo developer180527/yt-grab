@@ -27,6 +27,24 @@ function timeAgo(unixStr: string) {
   return `${Math.floor(secs / (86400 * 30))}mo ago`;
 }
 
+/**
+ * What was actually saved.
+ *
+ * History records `audio_only` but not which audio format produced the file —
+ * and since audio defaults to keeping the source codec, that is not MP3 unless
+ * the user asked for a conversion. The extension on disk is the only reliable
+ * answer, so use it and fall back to a neutral label rather than guessing.
+ */
+function formatLabel(item: HistoryItem): string {
+  if (!item.audio_only) return item.format_id.toUpperCase();
+  // A basename with no dot has no extension — `split(".").pop()` would
+  // otherwise hand back the whole name as if it were one.
+  const base = item.output_path?.split(/[\\/]/).pop() ?? "";
+  const dot = base.lastIndexOf(".");
+  const ext = dot > 0 ? base.slice(dot + 1) : "";
+  return ext.length > 0 && ext.length <= 5 && /^[a-z0-9]+$/i.test(ext) ? ext.toUpperCase() : "AUDIO";
+}
+
 function fullDate(unixStr: string) {
   const ts = parseTs(unixStr);
   return ts === null ? "" : new Date(ts * 1000).toLocaleString();
@@ -94,7 +112,7 @@ export default function HistoryPanel({ items, onDelete, onClear, onOpenPath }: P
                   <div className="dl-stats">
                     <span className="stat-kv">
                       <span className="stat-k">fmt</span>
-                      <span>{item.audio_only ? "MP3" : item.format_id.toUpperCase()}</span>
+                      <span>{formatLabel(item)}</span>
                     </span>
                     <span title={fullDate(item.created_at)}>{timeAgo(item.created_at)}</span>
                   </div>
