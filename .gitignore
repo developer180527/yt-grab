@@ -27,3 +27,8 @@ dist-ssr
 # bundle icons from there, so they have to be committed. Regenerate them from
 # the master artwork with:  npm run tauri icon Assets/<name>.icns
 src-tauri/icons/new_icon2.png
+
+# yt-dlp is bundled into the app but fetched at build time — it is tens of MB
+# per platform, and that does not belong in git history.
+# Populate with:  npm run fetch-ytdlp
+src-tauri/binaries/
